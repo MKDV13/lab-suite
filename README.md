@@ -1,17 +1,19 @@
-# Suíte Analítica Modular (Streamlit)
+# Suíte Analítica Modular (`lab-suite`)
 
-Aplicação modular em Streamlit para análise e visualização de dados experimentais de laboratório (curvas I×V, corrente × tempo I×t, espectroscopia de impedância eletroquímica EIS, modelagem/exportação compatível com ZView e espectroscopia UV-Vis), com padronização visual estilo Origin e suporte a add-ons isolados por fragmento[cite: 2, 3, 5, 17, 23, 27].
+Aplicação modular em Streamlit para análise, visualização e exportação de dados experimentais em Ciência de Materiais, com arquitetura desacoplada entre núcleo (`core/`) e extensões (`addons/`).
 
-## Estrutura do projeto
+## Estrutura do Projeto
 
-- `app.py`: núcleo da aplicação, carregamento dinâmico de add-ons com cache baseado em assinatura/`mtime`, validação AST e isolamento de abas via `@st.fragment`[cite: 2, 4, 17, 24].
-- `core/`: utilitários centrais de leitura/inferência de arquivos científicos (`parsers.py`), formatação e plotagem (`plotting.py`), interface compartilhada (`ui.py`) e consolidação de resultados (`resultados.py`)[cite: 2, 7, 10, 12].
-- `addons/`: módulos funcionais por técnica experimental (Keithley I×V e I×t, Solartron EIS, preditor/auxiliar ZView e Cary UV-Vis), além do `_template_addon.py` como modelo base para novos módulos[cite: 2, 6, 14, 23, 27].
-- `Iniciar_Suite.bat` / `Parar_Suite.bat`: scripts de inicialização e encerramento no Windows (com detecção de ambiente virtual local e verificação de porta)[cite: 25].
-- `requirements.txt`: dependências Python do projeto[cite: 5, 36].
+- `app.py`: aplicação principal em Streamlit, carregamento dinâmico de *add-ons* com cache por `mtime`, ordenação por `ORDER`, isolamento de abas via `@st.fragment`, barra lateral global de padronização gráfica e instalador de módulos `.py`.
+- `core/`: motor compartilhado da aplicação (leitura/parsing, plotagem e utilitários comuns).
+- `addons/`: módulos de análise e visualização carregados dinamicamente como abas.
+- `addons/_template_addon.py`: contrato base com metadados (`TITLE`, `ICON`, `ORDER`) e a função obrigatória `render(cfg_plot)`.
+- `requirements.txt`: dependências Python do ambiente.
+- `Iniciar_Suite.bat` e `Parar_Suite.bat`: scripts auxiliares para iniciar e encerrar a suíte no Windows.
 
-## Como executar
+## Como Instalar e Rodar
 
-1. Crie/ative o ambiente virtual (ex.: `.venv`) e instale as dependências[cite: 25, 31]:
+1. Clona ou baixa o repositório:
    ```bash
-   pip install -r requirements.txt
+   git clone [https://github.com/MKDV13/lab-suite.git](https://github.com/MKDV13/lab-suite.git)
+   cd lab-suite
