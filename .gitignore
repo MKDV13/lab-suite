@@ -1,0 +1,37 @@
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Python e cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Logs, PIDs e arquivos gerados em execucao
+*.log
+suite.log
+suite.old.log
+suite.pid
+logs/
+
+# Dados experimentais, tabelas e saidas pesadas (ajuste conforme necessidade)
+*.csv
+*.xlsx
+*.xls
+*.txt
+*.dat
+*.z
+*.zplot
+
+# Arquivos do sistema e editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
