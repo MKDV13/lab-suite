@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 app.py
-Aplicação principal da Suíte Analítica Modular (P3HT / P3DT & Preditor ZView).
+Aplicação principal da Suíte Analítica Modular.
 Responsável por:
   - Carregar dinamicamente todos os módulos válidos da pasta addons/ via importlib,
     com CACHE baseado no mtime dos arquivos de addons/ e core/ (só reimporta quando algo é editado)
@@ -30,7 +30,7 @@ CORE_DIR = BASE_DIR / "core"
 ADDONS_DIR.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(
-    page_title="Suíte Analítica Modular — P3HT/P3DT & ZView",
+    page_title="Suíte Analítica Modular",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -416,10 +416,10 @@ def main() -> None:
     addons_ativos, erros_addons = carregar_addons(ADDONS_DIR)
     cfg_plot = render_sidebar_global(addons_ativos, erros_addons)
 
-    st.title("⚡ Central Analítica Modular — Filmes Finos & Preditor ZView")
+    st.title("⚡ Central Analítica Modular")
     st.caption(
-        "Arquitetura extensível de Add-ons para Keithley (I×V com Histerese e Sensoriamento I×t), "
-        "Solartron (EIS: Bode, Nyquist e Circuito Equivalente ZView) e Espectroscopia UV-Vis."
+        "Motor genérico de leitura, plotagem no padrão OriginPro e exportação para "
+        "add-ons modulares de caracterização e análise experimental."
     )
 
     if not addons_ativos:
