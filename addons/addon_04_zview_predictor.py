@@ -27,8 +27,8 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
+from core import resultados as registro_central
 from core.parsers import (
-    exibir_diagnostico_leitura,
     extrair_solartron_eis,
     render_painel_override_parser,
 )
@@ -40,10 +40,24 @@ from core.plotting import (
     fmt_num,
     formatar_eixo_freq_bode,
 )
+from core.ui import (
+    ColetorResultados,
+    EntradaArquivos,
+    cabecalho_secao,
+    ler_arquivos,
+    msg_aviso,
+    msg_sem_dados,
+    sessao_resultados,
+    uploader_arquivos,
+)
 
 TITLE = "4. Preditor Circuito ZView"
 ICON = "🧠"
 ORDER = 40
+
+# Registro central de resultados (core/resultados.py). A amostra usa a MESMA regra de nome da Aba 3
+# (legenda = nome do arquivo sem extensão), para o EIS e o ajuste ZView da mesma amostra se encontrarem.
+_ORIGEM_REGISTRO = "addon_04_zview_predictor"
 
 
 # ==============================================================================
@@ -1014,13 +1028,72 @@ def _exportar_formato_zplot_ascii(df_eis: pd.DataFrame) -> bytes:
 # ==============================================================================
 # INTERFACE PRINCIPAL DO ADD-ON
 # ==============================================================================
-def render(cfg_plot: dict) -> None:
+def _unidade_param_zview(nome_param: str) -> str:
+    """Unidade do elemento ZView pelo nome (mesma convenção da tabela de chutes iniciais; '' = adimensional)."""
+    if nome_param == "L1":
+        return "H"
+    if nome_param.startswith("R"):
+        return "Ω"
+    if nome_param.startswith("C1"):
+        return "F"
+    if nome_param.endswith("-T"):
+        return "S·s^P"
+    if nome_param.endswith("-P"):
+        return ""
+    return "Ω·s^-0.5"
+
+
+def _amostra_da_chave_aba3(chave: str) -> str:
+    """A Aba 3 publica 'legenda [arquivo]' (ou só o arquivo, se a legenda for igual a ele): devolve a legenda."""
+    if chave.endswith("]") and " [" in chave:
+        return chave[: chave.rindex(" [")]
+    return chave
+
+
+def _registrar_resultado_zview(
+    coletor: ColetorResultados,
+    amostra: str,
+    ranking: List[ResultadoCircuito],
+    diag_info: Dict[str, Any],
+    meta_extra: Dict[str, Any],
+) -> None:
+    """Registra o modelo RECOMENDADO (1º do ranking): qualidade do ajuste, parâmetros ZView, derivados e diagnóstico."""
+    melhor = ranking[0]
+    metricas: Dict[str, Any] = {
+        "modelo": melhor.codigo_zview,
+        "n_parametros": int(len(melhor.param_nomes)),
+        "erro_medio": float(melhor.erro_medio_pct),
+        "chi2_red": float(melhor.chi2_red),
+        "AIC": float(melhor.aic),
+        "BIC": float(melhor.bic),
+        "Z_real_alta_freq": float(diag_info["zr_hf"]),
+        "KK_erro": float(diag_info["kk_erro_pct"]),
+        "n_picos": int(diag_info["n_picos"]),
+    }
+    unidades: Dict[str, str] = {"erro_medio": "%", "Z_real_alta_freq": "Ω", "KK_erro": "%"}
+
+    for nome_param in melhor.param_nomes:
+        metricas[nome_param] = float(melhor.param_valores[nome_param])
+        unidades[nome_param] = _unidade_param_zview(nome_param)
+    for chave_deriv, valor_deriv in melhor.derivados.items():
+        nome_deriv = chave_deriv.split(" (")[0]
+        metricas[nome_deriv] = float(valor_deriv)
+        if "(" in chave_deriv:
+            unidades[nome_deriv] = chave_deriv.split("(")[-1].rstrip(")")
+
+    meta = dict(meta_extra)
+    meta["ranking_top3"] = [m.codigo_zview for m in ranking[:3]]
+    meta["incertezas_pct"] = {k: float(v) for k, v in melhor.param_erros_pct.items()}
+    coletor.adicionar(amostra, metricas, unidades={k: v for k, v in unidades.items() if v}, meta=meta)
+
+
+def _render_corpo(cfg_plot: dict, coletor: ColetorResultados) -> None:
     usar_virgula = bool(cfg_plot.get("usar_virgula", True))
 
-    st.subheader("🧠 Preditor Automático de Circuito Equivalente para o ZView 2.9c")
-    st.caption(
+    cabecalho_secao(
+        "🧠 Preditor Automático de Circuito Equivalente para o ZView 2.9c",
         "Analisa a topologia espectral da Solartron, valida Kramers-Kronig (Lin-KK), ajusta todos os modelos "
-        "candidatos via CNLS com cache instantâneo e entrega o diagrama + parâmetros prontos para o ZView."
+        "candidatos via CNLS com cache instantâneo e entrega o diagrama + parâmetros prontos para o ZView.",
     )
 
     if not SCIPY_AVAILABLE:
@@ -1029,10 +1102,11 @@ def render(cfg_plot: dict) -> None:
 
     col_src1, col_src2 = st.columns([1.9, 1.3])
     with col_src1:
-        file_zv = st.file_uploader(
+        arquivos_zv = uploader_arquivos(
+            "zv",
             "Carregar espectro individual da Solartron (.z, .txt, .csv, .dat)",
-            type=["z", "dat", "txt", "csv"],
-            key="zv_uploader",
+            tipos=("z", "dat", "txt", "csv"),
+            key_uploader="zv_uploader",
         )
     with col_src2:
         opcoes_demo = [
@@ -1067,24 +1141,26 @@ def render(cfg_plot: dict) -> None:
         )
 
     opcoes_parser, slot_diag = render_painel_override_parser("zv")
+    entrada = EntradaArquivos(arquivos_zv, opcoes_parser, slot_diag, "zv")
 
     df_alvo_zv: Optional[pd.DataFrame] = None
     nome_alvo_zv = ""
+    amostra_registro: Optional[str] = None  # None = não registrar (exemplos sintéticos não são medições)
 
-    if file_zv is not None:
-        try:
-            df_alvo_zv, meta_zv = extrair_solartron_eis(file_zv.getvalue(), opcoes=opcoes_parser)
-            exibir_diagnostico_leitura(slot_diag, meta_zv, file_zv.name)
-            nome_alvo_zv = file_zv.name
-        except Exception as exc:
-            st.error(f"Falha ao ler arquivo Solartron `{file_zv.name}`: {exc}")
+    if not entrada.vazia:
+        lidos = ler_arquivos(entrada, extrair_solartron_eis, contexto_erro="arquivo Solartron")
+        if not lidos:
             return
+        df_alvo_zv, _meta_zv = lidos[0].resultado
+        nome_alvo_zv = lidos[0].nome
+        amostra_registro = registro_central.amostra_de_arquivo(nome_alvo_zv)
     elif fonte_aux.startswith("📂 Reutilizar da Aba 3: "):
         chave = fonte_aux.replace("📂 Reutilizar da Aba 3: ", "")
         mapa_aba3 = st.session_state.get("eis_carregados_aba3", {})
         if chave in mapa_aba3:
             df_alvo_zv = mapa_aba3[chave].copy()
             nome_alvo_zv = chave
+            amostra_registro = _amostra_da_chave_aba3(chave)
     elif "Exemplo 1" in fonte_aux:
         df_alvo_zv, _ = extrair_solartron_eis(gerar_espectro_sintetico_solartron("1_arco_po"))
         nome_alvo_zv = "Simulacao_P3HT_Po_1Arco.z"
@@ -1099,6 +1175,9 @@ def render(cfg_plot: dict) -> None:
         nome_alvo_zv = "Simulacao_Indutor_L1_AltaFreq.z"
 
     if df_alvo_zv is None or df_alvo_zv.empty:
+        msg_sem_dados(
+            "Envie um espectro individual da Solartron ou selecione um espectro da Aba 3 / exemplo de calibração."
+        )
         return
 
     zc1, zc2, zc3, zc4 = st.columns([1.6, 1.2, 1.3, 0.9])
@@ -1138,7 +1217,7 @@ def render(cfg_plot: dict) -> None:
     ].reset_index(drop=True)
 
     if len(df_fit) < 8:
-        st.warning("Selecione uma janela de frequência com pelo menos 8 pontos experimentais.")
+        msg_aviso("Selecione uma janela de frequência com pelo menos 8 pontos experimentais.")
         return
 
     f_tup = tuple(float(x) for x in df_fit["Freq"].values)
@@ -1158,6 +1237,21 @@ def render(cfg_plot: dict) -> None:
     if not ranking_modelos:
         st.error("Não foi possível convergir os modelos matemáticos sobre os dados fornecidos.")
         return
+
+    if amostra_registro is not None:
+        _registrar_resultado_zview(
+            coletor,
+            amostra_registro,
+            ranking_modelos,
+            diag_info,
+            {
+                "arquivo": nome_alvo_zv,
+                "janela_log_f": [float(faixa_log_f[0]), float(faixa_log_f[1])],
+                "n_pontos": int(len(df_fit)),
+                "ponderacao": modo_peso_zv,
+                "indutor": modo_indutor_zv,
+            },
+        )
 
     # 1. DIAGNÓSTICO AUTOMÁTICO DO ESPECTRO
     st.markdown("#### 1. Diagnóstico Físico Automatizado do Espectro Solartron")
@@ -1522,3 +1616,9 @@ def render(cfg_plot: dict) -> None:
         )
     if layout_v4.startswith("Lado a lado"):
         plt.close(fig_ver)
+
+
+def render(cfg_plot: dict) -> None:
+    """Ponto de entrada do app.py: o corpo roda dentro da sessão de registro central de resultados."""
+    with sessao_resultados(registro_central.TEC_ZVIEW, _ORIGEM_REGISTRO, cfg_plot, "zv_reg") as coletor:
+        _render_corpo(cfg_plot, coletor)

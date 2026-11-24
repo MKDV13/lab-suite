@@ -16,16 +16,23 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core.parsers import (
-    exibir_diagnostico_leitura,
-    extrair_cary_uvvis,
-    render_painel_override_parser,
-)
+from core import resultados as registro_central
+from core.parsers import extrair_cary_uvvis
 from core.plotting import (
-    aplicar_estilo_origin,
     botao_download_csv,
     botao_download_figura,
     fmt_num,
+)
+from core.ui import (
+    ColetorResultados,
+    cabecalho_secao,
+    legenda_origin,
+    ler_arquivos,
+    msg_aviso,
+    msg_sem_dados,
+    nova_figura_origin,
+    painel_entrada,
+    sessao_resultados,
 )
 
 TITLE = "5. Espectroscopia UV-Vis & Tauc"
@@ -33,6 +40,10 @@ ICON = "🌈"
 ORDER = 50
 
 HC_EV_NM = 1239.841984  # Constante h·c em eV·nm
+
+# Registro central de resultados (core/resultados.py): a amostra é a legenda do espectro (nome editável na tela).
+_ORIGEM_REGISTRO = "addon_05_cary_uvvis"
+_UNIDADES_UVVIS = {"lambda_max": "nm", "E_max": "eV", "W_Spano": "meV", "Eg": "eV", "lambda_onset": "nm"}
 
 
 def _calcular_w_spano_mev(razao_00_01: float, ep_ev: float = 0.180) -> Tuple[float, str]:
@@ -107,43 +118,27 @@ def _encontrar_janela_linear_tauc(
     return melhor_par
 
 
-def render(cfg_plot: dict) -> None:
+def _render_corpo(cfg_plot: dict, coletor: ColetorResultados) -> None:
     usar_virgula = bool(cfg_plot.get("usar_virgula", True))
 
-    st.subheader("Espectroscopia Óptica UV-Vis, Agregação de Spano (W) & Tauc Plot (Bandgap Eg)")
+    cabecalho_secao("Espectroscopia Óptica UV-Vis, Agregação de Spano (W) & Tauc Plot (Bandgap Eg)")
 
-    files_uv = st.file_uploader(
+    entrada = painel_entrada(
+        "uv",
         "Carregar espectros UV-Vis (.csv, .txt, .dat do Cary 100 WinUV — suporta planilha multi-amostra ou arquivos individuais)",
-        type=["csv", "txt", "dat", "dsp"],
-        accept_multiple_files=True,
-        key="uv_uploader",
+        tipos=("csv", "txt", "dat", "dsp"),
+        multiplos=True,
+        key_uploader="uv_uploader",
     )
 
-    opcoes_parser, slot_diag = render_painel_override_parser("uv")
-
-    if not files_uv:
+    if entrada.vazia:
+        msg_sem_dados("Carregue um ou mais espectros UV-Vis do Cary para iniciar a análise.")
         return
 
     catalogo_espectros: List[Dict[str, Any]] = []
-    meta_primeiro = None
-    nome_primeiro = ""
-
-    for idx_f, f_uv in enumerate(files_uv):
-        try:
-            lista_esp, meta_uv = extrair_cary_uvvis(
-                f_uv.getvalue(),
-                nome_arquivo=f_uv.name,
-                opcoes=opcoes_parser,
-            )
-            if idx_f == 0:
-                meta_primeiro = meta_uv
-                nome_primeiro = f_uv.name
-            catalogo_espectros.extend(lista_esp)
-        except Exception as exc:
-            st.error(f"Erro ao ler `{f_uv.name}`: {exc}")
-
-    if meta_primeiro is not None:
-        exibir_diagnostico_leitura(slot_diag, meta_primeiro, nome_primeiro)
+    for lido in ler_arquivos(entrada, extrair_cary_uvvis, nome_kwarg="nome_arquivo"):
+        lista_esp, _meta_uv = lido.resultado
+        catalogo_espectros.extend(lista_esp)
 
     if not catalogo_espectros:
         return
@@ -237,7 +232,7 @@ def render(cfg_plot: dict) -> None:
                 cfg_curvas_uv[idx_esp] = {"label": lbl_edit.strip() or esp_item["nome"], "color": cor_edit}
 
     if not indices_sel:
-        st.info("Selecione ao menos um espectro acima.")
+        msg_sem_dados("Selecione ao menos um espectro acima.")
         return
 
     # Processar espectros selecionados
@@ -301,6 +296,16 @@ def render(cfg_plot: dict) -> None:
                 "wl": x_w,
                 "abs_real": y_abs_real,
                 "abs_plot": y_plot,
+                "origem": esp_raw["origem"],
+                "metricas_registro": {
+                    "lambda_max": l_max,
+                    "E_max": e_pico_ev,
+                    "A00": a_00,
+                    "A01": a_01,
+                    "razao_A00_A01": razao_vib,
+                    "W_Spano": w_spano_mev,
+                    "regime": status_spano,
+                },
             }
         )
 
@@ -318,7 +323,7 @@ def render(cfg_plot: dict) -> None:
         )
 
     if not espectros_proc:
-        st.warning("Nenhum dado numérico válido encontrado na janela de comprimento de onda selecionada.")
+        msg_aviso("Nenhum dado numérico válido encontrado na janela de comprimento de onda selecionada.")
         return
 
     sub_abs, sub_tauc = st.tabs([
@@ -330,7 +335,11 @@ def render(cfg_plot: dict) -> None:
     # SUB-ABA 1: ESPECTRO UV-VIS + PARÂMETROS VIBRÔNICOS E W DE SPANO
     # ==========================================================================
     with sub_abs:
-        fig_uv, ax_uv = plt.subplots(figsize=(cfg_plot["fig_w"], cfg_plot["fig_h"]), dpi=150)
+        fig_uv, ax_uv = nova_figura_origin(
+            cfg_plot,
+            "Comprimento de Onda, λ (nm)",
+            "Absorbância Normalizada (u.a.)" if norm_uv else "Absorbância (u.a.)",
+        )
 
         for sp in espectros_proc:
             ax_uv.plot(sp["wl"], sp["abs_plot"], linewidth=1.8, color=sp["color"], label=sp["label"], zorder=3)
@@ -357,24 +366,9 @@ def render(cfg_plot: dict) -> None:
                     color="#333333",
                 )
 
-        ax_uv.set_xlabel("Comprimento de Onda, λ (nm)", fontsize=cfg_plot["font_labels"], labelpad=6)
-        ax_uv.set_ylabel(
-            "Absorbância Normalizada (u.a.)" if norm_uv else "Absorbância (u.a.)",
-            fontsize=cfg_plot["font_labels"],
-            labelpad=6,
-        )
         ax_uv.set_xlim(wl_min, wl_max)
 
-        leg_uv = ax_uv.legend(
-            loc="upper right",
-            frameon=True,
-            fancybox=False,
-            edgecolor="black",
-            fontsize=cfg_plot["font_legend"],
-        )
-        leg_uv.get_frame().set_linewidth(0.9)
-
-        aplicar_estilo_origin(ax_uv, cfg_plot)
+        legenda_origin(ax_uv, cfg_plot, loc="upper right")
         plt.tight_layout()
 
         cu1, cu2 = st.columns([1.95, 1.35])
@@ -603,7 +597,7 @@ def render(cfg_plot: dict) -> None:
         res_eg_alvo = _ajustar_eg_amostra(e_alvo, y_alvo, usar_auto=modo_ajuste_eg.startswith("Automático"))
 
         # Construção do Gráfico de Tauc
-        fig_tauc, ax_tauc = plt.subplots(figsize=(cfg_plot["fig_w"], cfg_plot["fig_h"]), dpi=150)
+        fig_tauc, ax_tauc = nova_figura_origin(cfg_plot, r"Energia do Fóton, $h\nu$ (eV)", rot_y_tauc)
 
         mask_vis = (e_alvo >= e_plot_min) & (e_alvo <= e_plot_max)
         e_vis = e_alvo[mask_vis]
@@ -674,19 +668,8 @@ def render(cfg_plot: dict) -> None:
         y_max_v = float(np.max(y_vis)) if len(y_vis) > 0 else 1.0
         ax_tauc.set_xlim(e_plot_min, e_plot_max)
         ax_tauc.set_ylim(-0.04 * y_max_v, 1.12 * y_max_v)
-        ax_tauc.set_xlabel(r"Energia do Fóton, $h\nu$ (eV)", fontsize=cfg_plot["font_labels"], labelpad=6)
-        ax_tauc.set_ylabel(rot_y_tauc, fontsize=cfg_plot["font_labels"], labelpad=6)
 
-        leg_t = ax_tauc.legend(
-            loc="upper left" if eg_f > (e_plot_min + e_plot_max) / 2 else "lower right",
-            frameon=True,
-            fancybox=False,
-            edgecolor="black",
-            fontsize=cfg_plot["font_legend"],
-        )
-        leg_t.get_frame().set_linewidth(0.9)
-
-        aplicar_estilo_origin(ax_tauc, cfg_plot)
+        legenda_origin(ax_tauc, cfg_plot, loc="upper left" if eg_f > (e_plot_min + e_plot_max) / 2 else "lower right")
         plt.tight_layout()
 
         ct_g, ct_m = st.columns([2.05, 1.25])
@@ -699,7 +682,7 @@ def render(cfg_plot: dict) -> None:
                 st.metric("Borda de Absorção (λ_onset)", f"{fmt_num(HC_EV_NM / eg_f, 1, usar_virgula)} nm")
                 st.metric("Linearidade da Tangente (R²)", f"{res_eg_alvo['r2']:.5f}")
             else:
-                st.warning("Ajuste a janela de energia para capturar uma subida linear positiva da borda de absorção.")
+                msg_aviso("Ajuste a janela de energia para capturar uma subida linear positiva da borda de absorção.")
 
             botao_download_figura(fig_tauc, f"Tauc_Plot_{sp_alvo['label']}", cfg_plot, "tauc_fig")
 
@@ -745,3 +728,47 @@ def render(cfg_plot: dict) -> None:
                 "tauc_all_csv",
                 label="📊 Baixar Tabela Comparativa de Eg (.CSV)",
             )
+
+    # Registro central: métricas vibrônicas/Spano de cada espectro ativo + Eg pelo Tauc na configuração atual da tela
+    nan = float("nan")
+    for sp_item in espectros_proc:
+        eg_i, r2_i = nan, nan
+        try:
+            e_it, y_it = _converter_para_tauc(sp_item["wl"], sp_item["abs_real"])
+            r_it = _ajustar_eg_amostra(e_it, y_it, usar_auto=modo_ajuste_eg.startswith("Automático"))
+            eg_i = float(r_it["eg"])
+            r2_i = float(r_it["r2"])
+        except Exception:
+            pass  # o registro nunca derruba a aba: Eg fica indefinido (NaN) para esta amostra
+
+        eg_valido = bool(np.isfinite(eg_i) and eg_i > 0)
+        metricas_uv = dict(sp_item["metricas_registro"])
+        metricas_uv["Eg"] = eg_i if eg_valido else nan
+        metricas_uv["lambda_onset"] = HC_EV_NM / eg_i if eg_valido else nan
+        metricas_uv["R2_tauc"] = r2_i if np.isfinite(r2_i) else nan
+        coletor.adicionar(
+            sp_item["label"],
+            metricas_uv,
+            unidades=_UNIDADES_UVVIS,
+            meta={
+                "arquivo": sp_item["origem"],
+                "janela_lambda_nm": [float(wl_min), float(wl_max)],
+                "posicao_A00_nm": float(wl_00),
+                "posicao_A01_nm": float(wl_01),
+                "Ep_eV": float(ep_spano_ev),
+                "leitura_A0": busca_local_vib,
+                "zerar_espalhamento": bool(subtrair_offset),
+                "normalizado": bool(norm_uv),
+                "transicao_tauc": tipo_transicao,
+                "ajuste_tauc": modo_ajuste_eg,
+                "extrapolacao_eg": modo_base_tauc,
+                "espessura_nm": float(espessura_nm) if espessura_nm is not None else None,
+            },
+            desambiguar=sp_item["origem"],
+        )
+
+
+def render(cfg_plot: dict) -> None:
+    """Ponto de entrada do app.py: o corpo roda dentro da sessão de registro central de resultados."""
+    with sessao_resultados(registro_central.TEC_UVVIS, _ORIGEM_REGISTRO, cfg_plot, "uv_reg") as coletor:
+        _render_corpo(cfg_plot, coletor)

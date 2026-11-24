@@ -49,15 +49,10 @@ class ResultadoLeituraTabela:
 # ==============================================================================
 # EXPRESSÕES REGULARES PRÉ-COMPILADAS PARA NÚMEROS CIENTÍFICOS
 # ==============================================================================
-# Ponto decimal puro ou inteiro científico (ex: +0.57244E-06, 8.6, .25, -10, 1.2e+3)
 _RE_NUM_DOT = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eEdD][+-]?\d+)?$")
-# Vírgula decimal (exige dígito após a vírgula caso haja vírgula, evitando confundir '1, 2' com decimal!)
 _RE_NUM_COMMA = re.compile(r"^[+-]?(?:\d+(?:,\d+)?|,\d+)(?:[eEdD][+-]?\d+)?$")
-# Agrupamento de milhar brasileiro (ex: 1.234,56 ou 12.345,67E-03)
 _RE_THOUSAND_BR = re.compile(r"^[+-]?\d{1,3}(?:\.\d{3})+,\d+(?:[eEdD][+-]?\d+)?$")
-# Agrupamento de milhar internacional (ex: 1,234.56 ou 12,345.67E-03)
 _RE_THOUSAND_US = re.compile(r"^[+-]?\d{1,3}(?:,\d{3})+\.\d+(?:[eEdD][+-]?\d+)?$")
-# Inteiro puro sem separador fracionário (ambíguo quanto ao decimal, compatível com ambos)
 _RE_INT_SCI = re.compile(r"^[+-]?\d+(?:[eEdD][+-]?\d+)?$")
 
 _TOKENS_NULOS = {"", "nan", "null", "none", "na", "n/a", "---", "--", "-", "ovld", "overload", "inf", "-inf"}
@@ -67,10 +62,6 @@ _TOKENS_NULOS = {"", "nan", "null", "none", "na", "n/a", "---", "--", "-", "ovld
 # 1. DECODIFICAÇÃO SEGURA DE BYTES (UTF-8 / UTF-16 / CP1252 / LATIN-1)
 # ==============================================================================
 def decodificar_bytes_seguro(conteudo_bytes: bytes, encoding_forcado: str = "auto") -> Tuple[str, str]:
-    """
-    Decodifica bytes de equipamentos preservando símbolos como 'µ', 'Ω' e '°'
-    sem jamais apagar caracteres silenciosamente com errors='ignore'.
-    """
     if not conteudo_bytes:
         return "", "utf-8"
 
@@ -78,7 +69,6 @@ def decodificar_bytes_seguro(conteudo_bytes: bytes, encoding_forcado: str = "aut
         texto = conteudo_bytes.decode(encoding_forcado, errors="replace")
         return texto.replace("\r\n", "\n").replace("\r", "\n"), encoding_forcado
 
-    # 1. Verificar BOMs explícitos (UTF-16 LE/BE e UTF-8-SIG)
     if conteudo_bytes.startswith(b"\xff\xfe") or conteudo_bytes.startswith(b"\xfe\xff"):
         texto = conteudo_bytes.decode("utf-16", errors="replace")
         return texto.replace("\r\n", "\n").replace("\r", "\n"), "utf-16"
@@ -87,7 +77,6 @@ def decodificar_bytes_seguro(conteudo_bytes: bytes, encoding_forcado: str = "aut
         texto = conteudo_bytes.decode("utf-8-sig", errors="replace")
         return texto.replace("\r\n", "\n").replace("\r", "\n"), "utf-8-sig"
 
-    # 2. Heurística para UTF-16 sem BOM (presença regular de bytes nulos intercalados)
     amostra = conteudo_bytes[: min(2048, len(conteudo_bytes))]
     taxa_nulos = amostra.count(b"\x00") / max(1, len(amostra))
     if taxa_nulos > 0.20:
@@ -98,14 +87,12 @@ def decodificar_bytes_seguro(conteudo_bytes: bytes, encoding_forcado: str = "aut
         except UnicodeDecodeError:
             pass
 
-    # 3. Tentar UTF-8 estrito (sem apagar bytes altos)
     try:
         texto = conteudo_bytes.decode("utf-8")
         return texto.replace("\r\n", "\n").replace("\r", "\n"), "utf-8"
     except UnicodeDecodeError:
         pass
 
-    # 4. Fallback Windows-1252 / Latin-1 (padrão de PCs Windows de laboratório no Brasil)
     try:
         texto = conteudo_bytes.decode("cp1252")
         return texto.replace("\r\n", "\n").replace("\r", "\n"), "cp1252"
@@ -118,11 +105,6 @@ def decodificar_bytes_seguro(conteudo_bytes: bytes, encoding_forcado: str = "aut
 # 2. CONVERSÃO SEGURA DE FLOAT (ELEMENTO A ELEMENTO COM CACHE VETORIAL)
 # ==============================================================================
 def converter_token_float(val: Any, decimal: str = "auto") -> float:
-    """
-    Converte um único valor textual ou numérico para float com segurança matemática total:
-      - Suporta notação científica com ponto ('+0.57244E-06') ou vírgula ('1,23E-05')
-      - Nunca remove pontos decimais legítimos achando que são separadores de milhar
-    """
     if val is None:
         return np.nan
     if isinstance(val, (int, float, np.number)):
@@ -132,16 +114,13 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
     if not s:
         return np.nan
 
-    # Limpar espaços invisíveis e normalizar sinal de menos Unicode ('−')
     s = s.replace("\ufeff", "").replace("\xa0", "").replace("\u200b", "").replace("−", "-").strip()
     if s.lower() in _TOKENS_NULOS:
         return np.nan
 
-    # Suporte a expoente Fortran 'D'/'d' (ex: 1.23D-05 -> 1.23e-05)
     if ("d" in s or "D" in s) and re.search(r"\d[dD][+-]?\d+$", s):
         s = re.sub(r"([0-9])[dD]([+-]?\d+)$", r"\1e\2", s)
 
-    # Caso explícito: decimal é ponto '.'
     if decimal == ".":
         if "," not in s:
             try:
@@ -153,7 +132,6 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
                 return float(s.replace(",", ""))
             except ValueError:
                 return np.nan
-        # Caso o usuário tenha deixado '.' mas o equipamento mandou '1,23E-05' sem ponto
         if "." not in s and _RE_NUM_COMMA.match(s):
             try:
                 return float(s.replace(",", "."))
@@ -161,7 +139,6 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
                 return np.nan
         return np.nan
 
-    # Caso explícito: decimal é vírgula ','
     if decimal == ",":
         if _RE_THOUSAND_BR.match(s):
             s_clean = s.replace(".", "").replace(",", ".")
@@ -174,7 +151,6 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
                 return float(s.replace(",", "."))
             except ValueError:
                 return np.nan
-        # Se vier ponto decimal puro mesmo com override ',', não destruir o ponto!
         if "," not in s and _RE_NUM_DOT.match(s):
             try:
                 return float(s)
@@ -182,7 +158,6 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
                 return np.nan
         return np.nan
 
-    # Modo "auto": inspeção individual do token (zero contaminação entre linhas!)
     tem_virg = "," in s
     tem_ponto = "." in s
 
@@ -193,7 +168,6 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
             return np.nan
 
     if tem_virg and not tem_ponto:
-        # Verificar se há múltiplas vírgulas de milhar US em inteiro (ex: 1,234,567)
         if s.count(",") > 1 and re.match(r"^[+-]?\d{1,3}(?:,\d{3})+$", s):
             try:
                 return float(s.replace(",", ""))
@@ -204,20 +178,17 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
         except ValueError:
             return np.nan
 
-    # Ambos ',' e '.' presentes no MESMO token: comparar posição antes do expoente
     base_mantissa = re.split(r"[eE]", s)[0]
     ult_virg = base_mantissa.rfind(",")
     ult_ponto = base_mantissa.rfind(".")
 
     if ult_virg > ult_ponto:
-        # Padrão Brasileiro: 1.234,56 ou 1.234,56E-03
         if _RE_THOUSAND_BR.match(s):
             try:
                 return float(s.replace(".", "").replace(",", "."))
             except ValueError:
                 return np.nan
     else:
-        # Padrão Internacional: 1,234.56 ou 1,234.56E-03
         if _RE_THOUSAND_US.match(s):
             try:
                 return float(s.replace(",", ""))
@@ -228,10 +199,6 @@ def converter_token_float(val: Any, decimal: str = "auto") -> float:
 
 
 def converter_serie_float(serie: pd.Series, decimal: str = "auto") -> pd.Series:
-    """
-    Conversão rápida e segura de uma Series pandas para float64 usando cache de valores únicos,
-    garantindo performance vetorial e precisão elemento a elemento.
-    """
     if pd.api.types.is_numeric_dtype(serie):
         return pd.to_numeric(serie, errors="coerce").astype(float)
 
@@ -254,6 +221,28 @@ def _split_linha_candidato(linha: str, sep: str) -> List[str]:
         return [t.strip() for t in linha.split(sep)]
 
 
+def _fundir_unidades_cabecalho(tokens_hdr: List[str], n_cols_dados: int) -> Optional[List[str]]:
+    """
+    Quando um cabeçalho separado por espaços contém tokens de unidade isolados como
+    '(s)', '(A)', '(V)', '(µA)', junta-os ao nome anterior para manter o mesmo número de colunas dos dados.
+    """
+    if len(tokens_hdr) <= n_cols_dados or n_cols_dados <= 0:
+        return None
+
+    merged: List[str] = []
+    for tok in tokens_hdr:
+        t_clean = tok.strip()
+        es_unidade = bool(re.match(r"^[\(\[][^\]\)]{1,12}[\)\]]$", t_clean))
+        if es_unidade and merged:
+            merged[-1] = f"{merged[-1]} {t_clean}".strip()
+        else:
+            merged.append(t_clean)
+
+    if len(merged) == n_cols_dados:
+        return merged
+    return None
+
+
 _RE_TIME_STAMP = re.compile(r"^\d{1,4}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$")
 _RE_DATE_STAMP = re.compile(r"^\d{1,4}[/-]\d{1,2}[/-]\d{1,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$")
 
@@ -263,10 +252,6 @@ def _eh_token_neutro(t: str) -> bool:
 
 
 def _token_eh_compativel(tok: str, dec: str) -> Tuple[bool, bool]:
-    """
-    Retorna (eh_valido_ou_neutro, eh_numero_explicito_com_decimal).
-    Suporta marcadores nulos ('-', 'NaN', 'OVLD') e relógios ('00:00:14' do Solartron SMaRT).
-    """
     t = tok.strip().strip('"').strip("'").replace("−", "-")
     if _eh_token_neutro(t):
         return True, False
@@ -283,16 +268,11 @@ def _token_eh_compativel(tok: str, dec: str) -> Tuple[bool, bool]:
 
 
 def _avaliar_linha_numerica(linha: str, sep: str, dec: str) -> Tuple[bool, int, int, int]:
-    """
-    Avalia uma linha sob o par (sep, dec).
-    Retorna: (linha_eh_dados_validos, n_cols_efetivas, n_numeros_reais, n_evidencias_decimais)
-    """
     stripped = linha.strip()
     if not stripped or stripped.startswith(("#", "!", "//")):
         return False, 0, 0, 0
 
     tokens = _split_linha_candidato(stripped, sep)
-    # Descontar célula vazia pendente no fim da linha (ex: SMaRT termina dados com ';')
     tokens_uteis = tokens[:-1] if (len(tokens) > 3 and tokens[-1] == "") else tokens
     n_cols = len(tokens_uteis)
     if n_cols < 2:
@@ -310,7 +290,6 @@ def _avaliar_linha_numerica(linha: str, sep: str, dec: str) -> Tuple[bool, int, 
         if evid:
             n_evid_dec += 1
 
-    # Exigir pelo menos 2 números reais na linha para ser considerada linha de dados científicos
     if n_num < 2:
         return False, n_cols, n_num, n_evid_dec
 
@@ -322,18 +301,10 @@ def detectar_bloco_e_dialeto(
     sep_override: str = "auto",
     dec_override: str = "auto",
 ) -> Tuple[str, str, int, bool, Optional[int]]:
-    """
-    Analisa o arquivo completo para descobrir:
-      1. Onde termina o cabeçalho de metadados (marcadores [Data], End Comments ou início de bloco numérico contínuo)
-      2. Qual o verdadeiro par (separador_coluna, separador_decimal) analisando até 25 linhas numéricas
-      3. Se existe linha de nomes de colunas imediatamente antes dos dados
-      4. Onde termina o bloco numérico (descartando rodapés textuais como no Cary WinUV)
-    """
     n_total = len(linhas)
     if n_total == 0:
         return ",", ".", 0, False, None
 
-    # Passo 1: Procurar marcadores explícitos de equipamentos conhecidos
     marcador_idx = None
     for idx, line in enumerate(linhas):
         l_low = line.strip().lower()
@@ -351,13 +322,11 @@ def detectar_bloco_e_dialeto(
     inicio_busca = marcador_idx if marcador_idx is not None else 0
 
     for sep_c, dec_c in pares_cand:
-        # Localizar a primeira sequência consistente de linhas numéricas a partir de inicio_busca
         first_num_idx = None
         for i in range(inicio_busca, min(n_total, inicio_busca + 250)):
             ok1, c1, _, _ = _avaliar_linha_numerica(linhas[i], sep_c, dec_c)
             if not ok1:
                 continue
-            # Confirmar com próximas linhas não-vazias (evita falsos positivos em 1 linha isolada do cabeçalho)
             confirmacoes = 1
             j = i + 1
             vistas = 0
@@ -375,7 +344,6 @@ def detectar_bloco_e_dialeto(
         if first_num_idx is None:
             continue
 
-        # Avaliar até 25 linhas numéricas a partir de first_num_idx
         amostra_cols = []
         linhas_validas = 0
         linhas_testadas = 0
@@ -395,9 +363,7 @@ def detectar_bloco_e_dialeto(
                     amostra_cols.append(ck)
                     total_nums += nk
                     total_evid_dec += evk
-            # Detectar início de rodapé não-numérico após pelo menos 3 linhas de dados
             if not ok_k and linhas_validas >= 3:
-                # Verificar se as próximas 2 linhas úteis também são texto (ex: rodapé Cary WinUV)
                 proximas_ok = False
                 for m in range(k + 1, min(n_total, k + 4)):
                     if linhas[m].strip():
@@ -416,22 +382,17 @@ def detectar_bloco_e_dialeto(
         col_modal = int(pd.Series(amostra_cols).mode().iloc[0])
         consistencia_cols = sum(1 for c in amostra_cols if c == col_modal) / len(amostra_cols)
 
-        # Pontuação ponderada para desempate físico rigoroso
         score = (
             taxa_validade * 100.0
             + consistencia_cols * 40.0
             + min(col_modal, 8) * 4.0
             + total_evid_dec * 2.5
         )
-        # Pequeno bônus para delimitadores explícitos (TAB, ';', ',') sobre espaço em branco puro quando empatados
         if sep_c in ("\t", ";", ","):
             score += 1.5
-        # Preferir '.' como desempate neutro apenas se o arquivo for 100% inteiros sem nenhuma vírgula ou ponto
         if total_evid_dec == 0 and dec_c == ".":
             score += 0.2
 
-        # Verificar se a linha útil imediatamente anterior a first_num_idx é cabeçalho de colunas
-        # (suporta cabeçalhos híbridos como no Solartron SMaRT, onde o cabeçalho usa ',' e os dados usam ';')
         tem_header = False
         header_idx = first_num_idx
         for h in range(first_num_idx - 1, max(-1, inicio_busca - 1), -1):
@@ -442,7 +403,8 @@ def detectar_bloco_e_dialeto(
                         toks_h = _split_linha_candidato(linhas[h], sep_h)
                         if toks_h and toks_h[-1] == "":
                             toks_h = toks_h[:-1]
-                        if len(toks_h) >= 2 and (sep_h == sep_c or abs(len(toks_h) - col_modal) <= 2):
+                        toks_h_adj = _fundir_unidades_cabecalho(toks_h, col_modal) or toks_h
+                        if len(toks_h_adj) >= 2 and (sep_h == sep_c or abs(len(toks_h_adj) - col_modal) <= 2):
                             tem_header = True
                             header_idx = h
                             break
@@ -462,10 +424,6 @@ def ler_arquivo_cientifico(
     conteudo_bytes: bytes,
     opcoes: Optional[OpcoesParser] = None,
 ) -> ResultadoLeituraTabela:
-    """
-    Lê qualquer arquivo tabular de equipamento (.dat, .z, .txt, .csv), detectando
-    automaticamente encoding, cabeçalho, rodapé, separador de colunas e separador decimal.
-    """
     opts = opcoes or OpcoesParser()
     texto, enc_usado = decodificar_bytes_seguro(conteudo_bytes, opts.encoding)
     linhas = texto.splitlines()
@@ -497,25 +455,34 @@ def ler_arquivo_cientifico(
             linhas_brutas_topo=linhas[:15],
         )
 
-    # Normalizar cabeçalho híbrido (ex: Solartron SMaRT exporta cabeçalho com ',' e dados com ';' + ';' extra no final)
-    nomes_header_hibrido: Optional[List[str]] = None
+    nomes_header_normalizado: Optional[List[str]] = None
     if tem_header and len(fatia_linhas) >= 2:
         linha_hdr = fatia_linhas[0]
         toks_dados_1 = _split_linha_candidato(fatia_linhas[1], sep_det)
+        if toks_dados_1 and toks_dados_1[-1] == "":
+            toks_dados_1 = toks_dados_1[:-1]
+        n_dados_uteis = len(toks_dados_1)
+
         toks_hdr_mesmo_sep = _split_linha_candidato(linha_hdr, sep_det)
-        if len(toks_hdr_mesmo_sep) < 2 or abs(len(toks_hdr_mesmo_sep) - len(toks_dados_1)) >= 2:
+        if toks_hdr_mesmo_sep and toks_hdr_mesmo_sep[-1] == "":
+            toks_hdr_mesmo_sep = toks_hdr_mesmo_sep[:-1]
+
+        fundido = _fundir_unidades_cabecalho(toks_hdr_mesmo_sep, n_dados_uteis)
+        if fundido is not None:
+            nomes_header_normalizado = fundido
+        elif len(toks_hdr_mesmo_sep) < 2 or abs(len(toks_hdr_mesmo_sep) - n_dados_uteis) >= 2:
             for sh in (",", ";", "\t", r"\s+"):
                 if sh == sep_det:
                     continue
                 th = _split_linha_candidato(linha_hdr, sh)
                 if th and th[-1] == "":
                     th = th[:-1]
-                n_dados_uteis = len(toks_dados_1) - (1 if (toks_dados_1 and toks_dados_1[-1] == "") else 0)
-                if len(th) >= 2 and abs(len(th) - n_dados_uteis) <= 2:
-                    nomes_header_hibrido = th
+                th_adj = _fundir_unidades_cabecalho(th, n_dados_uteis) or th
+                if len(th_adj) >= 2 and abs(len(th_adj) - n_dados_uteis) <= 2:
+                    nomes_header_normalizado = th_adj
                     break
 
-    if nomes_header_hibrido is not None:
+    if nomes_header_normalizado is not None:
         bloco_dados_sem_hdr = "\n".join(fatia_linhas[1:])
         df_raw = pd.read_csv(
             io.StringIO(bloco_dados_sem_hdr),
@@ -528,14 +495,13 @@ def ler_arquivo_cientifico(
         )
         cols_atrib = []
         for idx_c in range(df_raw.shape[1]):
-            if idx_c < len(nomes_header_hibrido) and nomes_header_hibrido[idx_c].strip():
-                cols_atrib.append(nomes_header_hibrido[idx_c].strip())
+            if idx_c < len(nomes_header_normalizado) and nomes_header_normalizado[idx_c].strip():
+                cols_atrib.append(nomes_header_normalizado[idx_c].strip())
             else:
                 cols_atrib.append(f"Col_{idx_c + 1}")
         df_raw.columns = cols_atrib
     else:
         bloco_util = "\n".join(fatia_linhas)
-        # index_col=False impede o pandas de deslocar colunas quando as linhas terminam com ';' ou ',' extra!
         df_raw = pd.read_csv(
             io.StringIO(bloco_util),
             sep=sep_det,
@@ -547,7 +513,6 @@ def ler_arquivo_cientifico(
             keep_default_na=False,
         )
 
-    # Limpar nomes de colunas e garantir unicidade se houver colunas repetidas
     novas_cols = []
     vistos: Dict[str, int] = {}
     for idx_c, c in enumerate(df_raw.columns):
@@ -562,7 +527,6 @@ def ler_arquivo_cientifico(
         novas_cols.append(nome)
     df_raw.columns = novas_cols
 
-    # Remover colunas 100% vazias (ex: vírgula extra no fim de todas as linhas)
     cols_manter = [c for c in df_raw.columns if (df_raw[c].astype(str).str.strip() != "").any()]
     df_raw = df_raw[cols_manter]
 
@@ -584,10 +548,6 @@ def extrair_keithley_iv(
     conteudo_bytes: bytes,
     opcoes: Optional[OpcoesParser] = None,
 ) -> Tuple[pd.DataFrame, ResultadoLeituraTabela]:
-    """
-    Extrai Time, Voltage, Current e identifica automaticamente os ramos de Ida (ΔV > 0)
-    e Volta (ΔV < 0) para análise de histerese em arquivos Keithley LabWorks (.dat/.csv/.txt).
-    """
     res = ler_arquivo_cientifico(conteudo_bytes, opcoes)
     df = res.df
     if df.empty:
@@ -602,6 +562,8 @@ def extrair_keithley_iv(
             col_v = orig
             break
     for k, orig in cols_lower.items():
+        if any(w in k for w in ["volt", "tens", "v ("]) or k == "v":
+            continue
         if any(w in k for w in ["measure", "curr", "corr", "i (a)", "i (ua)", "i (µa)"]) or k == "i":
             col_i = orig
             break
@@ -636,13 +598,11 @@ def extrair_keithley_iv(
     if len(out) < 2:
         raise ValueError("Menos de 2 pares válidos (Tensão, Corrente) encontrados após limpeza.")
 
-    # Classificar direção local de varredura (Ida: dV > 0 vs Volta: dV < 0)
     v_arr = out["Voltage"].values
     dv = np.diff(v_arr, prepend=v_arr[0])
     if len(dv) > 1 and dv[0] == 0:
         dv[0] = dv[1]
 
-    # Propagar última direção não-nula caso haja dois pontos consecutivos na mesma tensão
     dirs = np.where(dv > 1e-12, 1, np.where(dv < -1e-12, -1, 0))
     ultimo_sinal = 1
     for idx_d in range(len(dirs)):
@@ -664,10 +624,6 @@ def extrair_keithley_it(
     conteudo_bytes: bytes,
     opcoes: Optional[OpcoesParser] = None,
 ) -> Tuple[pd.DataFrame, ResultadoLeituraTabela, dict]:
-    """
-    Extrai Tempo e Corrente brutos sem alterar silenciosamente a escala da corrente!
-    Retorna diagnóstico informativo para auxiliar o usuário na conferência da unidade bruta.
-    """
     res = ler_arquivo_cientifico(conteudo_bytes, opcoes)
     df = res.df
     if df.empty:
@@ -682,7 +638,9 @@ def extrair_keithley_it(
             col_t = orig
             break
     for k, orig in cols_lower.items():
-        if any(w in k for w in ["measure", "curr", "corr", "i (", "amp"]) or k == "i":
+        if any(w in k for w in ["volt", "tens", "v ("]) or k == "v":
+            continue
+        if any(w in k for w in ["current", "curr", "corrente", "corr", "i (", "amp"]) or k == "i":
             col_i = orig
             break
 
@@ -690,7 +648,11 @@ def extrair_keithley_it(
     if col_t is None:
         col_t = cols[0]
     if col_i is None:
-        col_i = cols[-1] if len(cols) >= 2 else cols[0]
+        candidatas_sem_v = [c for c in cols if c != col_t and not any(w in c.lower() for w in ["volt", "tens", "v ("])]
+        if candidatas_sem_v:
+            col_i = candidatas_sem_v[0]
+        else:
+            col_i = cols[1] if len(cols) >= 2 else cols[0]
 
     out = pd.DataFrame()
     out["Time_raw"] = converter_serie_float(df[col_t], decimal=dec)
@@ -700,7 +662,6 @@ def extrair_keithley_it(
     if out.empty:
         raise ValueError("Nenhum ponto numérico válido encontrado nas colunas de Tempo e Corrente.")
 
-    # Detectar unidade sugerida pelo cabeçalho textual ou ordem de grandeza (apenas sugestão informativa!)
     header_i_low = col_i.lower()
     med_abs = float(np.nanmedian(np.abs(out["Current_raw"].values)))
     if "ua" in header_i_low or "µa" in header_i_low or "micro" in header_i_low:
@@ -728,11 +689,6 @@ def extrair_solartron_eis(
     inverter_sinal_zim: Optional[bool] = None,
     opcoes: Optional[OpcoesParser] = None,
 ) -> Tuple[pd.DataFrame, ResultadoLeituraTabela]:
-    """
-    Extrai Freq (Hz), Z_real (Ω) e Z_imag (Ω, convenção eletroquímica Z = Z' + j Z'',
-    onde arcos capacitivos têm Z_imag < 0 e -Z_imag > 0).
-    Suporta Solartron ZPlot (.z), SMaRT (.csv/.txt/.dat), retangular ou polar (|Z|, Fase).
-    """
     res = ler_arquivo_cientifico(conteudo_bytes, opcoes)
     df = res.df
     if df.empty:
@@ -770,13 +726,10 @@ def extrair_solartron_eis(
             break
 
     cols = list(df.columns)
-    # Fallback inteligente para arquivos sem cabeçalho (SMaRT 14 cols, ZPlot 6 cols ou tabela 3 cols do Origin)
     if col_f is None and len(cols) >= 3:
         if len(cols) >= 12:
-            # Padrão Solartron SMaRT sem cabeçalho: Col 5 (idx 4) = Freq, idx 10 = Z', idx 11 = Z''
             col_f = cols[4]
         else:
-            # Procurar coluna estritamente positiva que varre >= 2 décadas logarítmicas monotonamente
             for c_cand in cols:
                 s_c = df_num[c_cand].dropna().values
                 if len(s_c) >= 5 and np.all(s_c > 0):
@@ -853,14 +806,6 @@ def extrair_cary_uvvis(
     nome_arquivo: str = "Espectro",
     opcoes: Optional[OpcoesParser] = None,
 ) -> Tuple[List[Dict[str, Any]], ResultadoLeituraTabela]:
-    """
-    Suporte nativo completo para espectrofotômetros Agilent/Varian Cary 100 (Cary WinUV) e tabelas gerais:
-      1. CSV Multi-Amostra do Cary WinUV (2 linhas de cabeçalho: Linha 0 = nomes das amostras nas colunas pares,
-         Linha 1 = pares 'Wavelength (nm), Abs, Wavelength (nm), Abs...', seguido de dados e rodapé instrumental)
-      2. Tabela Multi-Coluna com eixo Wavelength compartilhado (Col 0 = Wavelength, Cols 1..N = Amostras)
-      3. Arquivo Simples de 2 colunas (Wavelength, Abs)
-    Retorna lista de dicionários: [{'nome': str, 'df': DataFrame(wl, abs), 'origem': str}, ...]
-    """
     opts = opcoes or OpcoesParser()
     texto, enc_usado = decodificar_bytes_seguro(conteudo_bytes, opts.encoding)
     linhas = texto.splitlines()
@@ -869,12 +814,10 @@ def extrair_cary_uvvis(
 
     nome_limpo_arq = re.sub(r"\.(csv|txt|dat|dsp)$", "", nome_arquivo, flags=re.IGNORECASE)
 
-    # Verificar assinatura clássica do CSV Multi-Amostra Cary WinUV nas primeiras 5 linhas
     linhas_nao_vazias = [(i, l) for i, l in enumerate(linhas[:8]) if l.strip()]
     if len(linhas_nao_vazias) >= 3:
         idx_l0, l0 = linhas_nao_vazias[0]
         idx_l1, l1 = linhas_nao_vazias[1]
-        # Detectar separador da linha de subcabeçalho l1
         sep_cary = opts.sep if opts.sep != "auto" else (
             ";" if l1.count(";") > l1.count(",") and l1.count(";") >= 2 else (
                 "\t" if l1.count("\t") >= 2 else ","
@@ -883,15 +826,12 @@ def extrair_cary_uvvis(
         toks_l0 = _split_linha_candidato(l0, sep_cary)
         toks_l1 = _split_linha_candidato(l1, sep_cary)
 
-        # Contar quantas vezes aparece 'wavelength' ou 'nm' ou 'compr' em l1
         n_wl_headers = sum(
             1 for t in toks_l1
             if any(w in t.lower() for w in ["wave", "nm", "compr", "lambda", "λ"])
         )
         if n_wl_headers >= 2 and len(toks_l1) >= 4:
-            # Confirmado formato multi-amostra pareado do Cary WinUV!
             espectros_cary: List[Dict[str, Any]] = []
-            # Extrair apenas linhas de dados até o bloco de rodapé ("Instrument", linha vazia seguida de texto, etc.)
             linhas_dados_cary = []
             for linha_d in linhas[idx_l1 + 1:]:
                 s_d = linha_d.strip()
@@ -900,13 +840,11 @@ def extrair_cary_uvvis(
                         break
                     continue
                 toks_d = _split_linha_candidato(s_d, sep_cary)
-                # Verificar se pelo menos o primeiro par (wl, abs) é numérico
                 v0 = converter_token_float(toks_d[0] if len(toks_d) > 0 else "", opts.decimal)
                 v1 = converter_token_float(toks_d[1] if len(toks_d) > 1 else "", opts.decimal)
                 if np.isfinite(v0) and np.isfinite(v1):
                     linhas_dados_cary.append(toks_d)
                 elif len(linhas_dados_cary) >= 5:
-                    # Chegou ao rodapé de parâmetros instrumentais do Cary WinUV
                     break
 
             if linhas_dados_cary:
@@ -943,7 +881,6 @@ def extrair_cary_uvvis(
                     )
                     return espectros_cary, meta_cary
 
-    # Fallback padrão: arquivo simples (2 colunas) ou matriz X compartilhado (Col 0 = wl, Cols 1..N = amostras)
     res = ler_arquivo_cientifico(conteudo_bytes, opts)
     df = res.df
     if df.empty or df.shape[1] < 2:
@@ -977,12 +914,6 @@ def extrair_cary_uvvis(
 # 6. MINI-PAINEL RETRÁTIL REUTILIZÁVEL DE INSPEÇÃO E OVERRIDE MANUAL
 # ==============================================================================
 def render_painel_override_parser(key_prefix: str) -> Tuple[OpcoesParser, Any]:
-    """
-    Renderiza em qualquer Add-on um mini-painel retrátil padronizado permitindo:
-      - Forçar manualmente Separador de Colunas, Separador Decimal, Encoding e Skip Rows
-      - Inspecionar o dialeto detectado, as primeiras linhas brutas e o DataFrame lido
-    Retorna (OpcoesParser, container_diagnostico).
-    """
     exp = st.expander("🛠️ Inspecionar Leitura Bruta / Override Manual de Separador e Decimal", expanded=False)
     with exp:
         c1, c2, c3, c4 = st.columns(4)
@@ -1023,7 +954,6 @@ def render_painel_override_parser(key_prefix: str) -> Tuple[OpcoesParser, Any]:
 
 
 def exibir_diagnostico_leitura(slot_container: Any, meta: ResultadoLeituraTabela, nome_arquivo: str = "") -> None:
-    """Preenche o container do mini-painel retrátil com os metadados reais detectados na leitura."""
     if slot_container is None or meta is None:
         return
     sep_legivel = {"\t": "TAB (\\t)", r"\s+": "Espaços (\\s+)", ",": "Vírgula (,)", ";": "Ponto-e-vírgula (;)"}.get(

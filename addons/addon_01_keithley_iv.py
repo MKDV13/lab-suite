@@ -8,29 +8,71 @@ Módulo 1: Caracterização Elétrica DC (I × V — Keithley LabWorks)
     Ida (ΔV > 0) e Volta (ΔV < 0) para quantificação de Histerese elétrica (área do laço e ΔI_hist)
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core.parsers import (
-    exibir_diagnostico_leitura,
-    extrair_keithley_iv,
-    render_painel_override_parser,
-)
+from core import resultados as registro_central
+from core.parsers import extrair_keithley_iv
 from core.plotting import (
-    aplicar_estilo_origin,
     botao_download_csv,
     botao_download_figura,
     fmt_cientifico,
     fmt_num,
 )
+from core.ui import (
+    ColetorResultados,
+    cabecalho_secao,
+    legenda_origin,
+    ler_arquivos,
+    msg_aviso,
+    msg_erro_leitura,
+    msg_sem_dados,
+    nova_figura_origin,
+    painel_entrada,
+    sessao_resultados,
+)
 
 TITLE = "1. Curvas I × V (Keithley)"
 ICON = "⚡"
 ORDER = 10
+
+# Registro central de resultados (core/resultados.py): a amostra é o nome da legenda; valores em unidades SI.
+_ORIGEM_REGISTRO = "addon_01_keithley_iv"
+_UNIDADES_IV = {
+    "R": "Ω",
+    "sigma": "S/m",
+    "slope": "A/V",
+    "R_ida": "Ω",
+    "sigma_ida": "S/m",
+    "slope_ida": "A/V",
+    "R_volta": "Ω",
+    "sigma_volta": "S/m",
+    "slope_volta": "A/V",
+    "area_histerese": "W",
+    "desvio_max_histerese": "%",
+}
+
+
+def _meta_registro_iv(
+    ativas: List[dict],
+    modo: str,
+    fator_geom: float,
+    v_min: float,
+    v_max: float,
+    n_pontos: int,
+) -> Dict[str, Any]:
+    return {
+        "modo": modo,
+        "arquivos": [a["nome"] for a in ativas],
+        "k_geometrico_m-1": float(fator_geom),
+        "v_min_V": float(v_min),
+        "v_max_V": float(v_max),
+        "pontos_interpolados": int(n_pontos),
+    }
 
 
 def _integrar_trapezio(y: np.ndarray, x: np.ndarray) -> float:
@@ -184,19 +226,18 @@ def _plotar_serie_iv(
         )
 
 
-def render(cfg_plot: dict) -> None:
+def _render_corpo(cfg_plot: dict, coletor: ColetorResultados) -> None:
     usar_virgula = bool(cfg_plot.get("usar_virgula", True))
 
-    st.subheader("Caracterização Elétrica DC (I × V) — Lei de Ohm, Condutividade e Histerese")
+    cabecalho_secao("Caracterização Elétrica DC (I × V) — Lei de Ohm, Condutividade e Histerese")
 
-    files_iv = st.file_uploader(
+    entrada = painel_entrada(
+        "iv",
         "Arraste um ou mais arquivos .dat / .csv / .txt da Keithley (mesma condição atmosférica para média)",
-        type=["dat", "txt", "csv"],
-        accept_multiple_files=True,
-        key="iv_uploader",
+        tipos=("dat", "txt", "csv"),
+        multiplos=True,
+        key_uploader="iv_uploader",
     )
-
-    opcoes_parser, slot_diag = render_painel_override_parser("iv")
 
     with st.expander("🎛️ Parâmetros Físicos, Histerese, Unidades e Estilo Visual (I × V)", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
@@ -271,26 +312,22 @@ def render(cfg_plot: dict) -> None:
         mostrar_r2_iv = c16.checkbox("Exibir R² na anotação do gráfico", value=False, key="iv_show_r2")
         limites_manuais_iv = c17.checkbox("Definir limites manuais dos eixos", value=False, key="iv_man_lim")
 
-    if not files_iv:
+    if entrada.vazia:
+        msg_sem_dados("Carregue um ou mais arquivos I × V da Keithley para iniciar a análise.")
         return
 
     amostras_lidas = []
-    meta_primeiro = None
-    nome_primeiro = ""
 
-    for idx_f, f_obj in enumerate(files_iv):
+    for lido in ler_arquivos(entrada, extrair_keithley_iv):
         try:
-            df_k, meta_k = extrair_keithley_iv(f_obj.getvalue(), opcoes=opcoes_parser)
-            if idx_f == 0:
-                meta_primeiro = meta_k
-                nome_primeiro = f_obj.name
+            df_k, _meta_k = lido.resultado
 
             fit_ind = _ajustar_reta_ohm(df_k["Voltage"].values, df_k["Current"].values, fator_geom)
             tem_hist_arq = bool(df_k.attrs.get("tem_histerese", False))
 
             amostras_lidas.append(
                 {
-                    "nome": f_obj.name,
+                    "nome": lido.nome,
                     "df": df_k,
                     "slope": fit_ind["slope"],
                     "R_kOhm": fit_ind["r_ohms"] / 1e3,
@@ -300,10 +337,7 @@ def render(cfg_plot: dict) -> None:
                 }
             )
         except Exception as exc:
-            st.error(f"Erro ao ler `{f_obj.name}`: {exc}")
-
-    if meta_primeiro is not None:
-        exibir_diagnostico_leitura(slot_diag, meta_primeiro, nome_primeiro)
+            msg_erro_leitura(lido.nome, exc)
 
     if not amostras_lidas:
         return
@@ -341,7 +375,7 @@ def render(cfg_plot: dict) -> None:
             if a["nome"] in selecionados_iv and np.isfinite(a["R_kOhm"]) and a["R_kOhm"] > 0
         ]
         if len(res_vals) >= 2 and (max(res_vals) / min(res_vals)) > 1.5:
-            st.warning(
+            msg_aviso(
                 f"⚠️ Atenção: A maior resistência selecionada ({max(res_vals):.1f} kΩ) é "
                 f"**{max(res_vals) / min(res_vals):.2f}×** maior que a menor ({min(res_vals):.1f} kΩ). "
                 "Verifique o contato das ponteiras ou a espessura do filme caso a barra de erro fique muito aberta."
@@ -349,13 +383,13 @@ def render(cfg_plot: dict) -> None:
 
     ativas = [a for a in amostras_lidas if a["nome"] in selecionados_iv]
     if not ativas:
-        st.info("Selecione pelo menos um arquivo acima para gerar o gráfico.")
+        msg_sem_dados("Selecione pelo menos um arquivo acima para gerar o gráfico.")
         return
 
     v_global_min = float(min(a["df"]["Voltage"].min() for a in ativas))
     v_global_max = float(max(a["df"]["Voltage"].max() for a in ativas))
     if v_global_max <= v_global_min:
-        st.warning("O intervalo de tensão nos arquivos selecionados é constante (ΔV = 0).")
+        msg_aviso("O intervalo de tensão nos arquivos selecionados é constante (ΔV = 0).")
         return
 
     v_min_sel, v_max_sel = st.slider(
@@ -366,7 +400,7 @@ def render(cfg_plot: dict) -> None:
         key="iv_v_range",
     )
     if v_max_sel <= v_min_sel:
-        st.warning("Selecione um intervalo onde V_máx > V_mín.")
+        msg_aviso("Selecione um intervalo onde V_máx > V_mín.")
         return
 
     v_grid = np.linspace(v_min_sel, v_max_sel, n_pts_iv)
@@ -384,7 +418,7 @@ def render(cfg_plot: dict) -> None:
         mat_volta = _interpolar_ramo(ativas, v_grid, v_min_sel, v_max_sel, sinal_ramo=-1)
 
         if mat_ida is None and mat_volta is None:
-            st.warning("Não há pontos suficientes no intervalo de tensão selecionado.")
+            msg_aviso("Não há pontos suficientes no intervalo de tensão selecionado.")
             return
 
         if mat_ida is None or mat_volta is None:
@@ -394,7 +428,7 @@ def render(cfg_plot: dict) -> None:
             )
 
         cor_fit_hist = "#E60000"
-        fig_iv, ax_iv = plt.subplots(figsize=(cfg_plot["fig_w"], cfg_plot["fig_h"]), dpi=150)
+        fig_iv, ax_iv = nova_figura_origin(cfg_plot, xlabel_iv, ylabel_iv, labelpad=7)
 
         if eixos_zero_iv:
             ax_iv.axhline(0, color="black", linewidth=0.85, zorder=1)
@@ -520,6 +554,37 @@ def render(cfg_plot: dict) -> None:
             gap_hist_pct = float(np.max(diff_abs) / pico_corrente * 100.0)
             colunas_export[f"Delta_Histerese_Ida_menos_Volta ({unid_i})"] = (i_mean_ida - i_mean_volta) * mult_i
 
+        metricas_reg: Dict[str, Any] = {"ciclo_fechado": bool(fit_ida is not None and fit_volta is not None)}
+        if fit_ida is not None:
+            metricas_reg.update(
+                {
+                    "R_ida": fit_ida["r_ohms"],
+                    "sigma_ida": fit_ida["sigma_sm"],
+                    "slope_ida": fit_ida["slope"],
+                    "R2_ida": fit_ida["r2"],
+                    "n_curvas_ida": int(len(mat_ida)),
+                }
+            )
+        if fit_volta is not None:
+            metricas_reg.update(
+                {
+                    "R_volta": fit_volta["r_ohms"],
+                    "sigma_volta": fit_volta["sigma_sm"],
+                    "slope_volta": fit_volta["slope"],
+                    "R2_volta": fit_volta["r2"],
+                    "n_curvas_volta": int(len(mat_volta)),
+                }
+            )
+        if np.isfinite(area_hist_av):
+            metricas_reg["area_histerese"] = float(area_hist_av)
+            metricas_reg["desvio_max_histerese"] = float(gap_hist_pct)
+        coletor.adicionar(
+            legenda_iv,
+            metricas_reg,
+            unidades=_UNIDADES_IV,
+            meta=_meta_registro_iv(ativas, "Histerese (Ida e Volta)", fator_geom, v_min_sel, v_max_sel, n_pts_iv),
+        )
+
         if limites_manuais_iv:
             y_cat = np.concatenate(y_extremos)
             lc1, lc2, lc3, lc4 = st.columns(4)
@@ -543,19 +608,7 @@ def render(cfg_plot: dict) -> None:
                 verticalalignment="top",
             )
 
-        ax_iv.set_xlabel(xlabel_iv, fontsize=cfg_plot["font_labels"], labelpad=7)
-        ax_iv.set_ylabel(ylabel_iv, fontsize=cfg_plot["font_labels"], labelpad=7)
-
-        leg = ax_iv.legend(
-            loc="lower right",
-            frameon=True,
-            fancybox=False,
-            edgecolor="black",
-            fontsize=cfg_plot["font_legend"],
-        )
-        leg.get_frame().set_linewidth(0.9)
-
-        aplicar_estilo_origin(ax_iv, cfg_plot)
+        legenda_origin(ax_iv, cfg_plot, loc="lower right")
         plt.tight_layout()
 
         col_g_iv, col_m_iv = st.columns([2.3, 1.0])
@@ -594,13 +647,26 @@ def render(cfg_plot: dict) -> None:
 
     matriz_i = _interpolar_ramo(ativas, v_grid, v_min_sel, v_max_sel, sinal_ramo=sinal_filtro)
     if matriz_i is None:
-        st.warning("Nenhum ponto válido encontrado para o ramo/intervalo de tensão selecionado.")
+        msg_aviso("Nenhum ponto válido encontrado para o ramo/intervalo de tensão selecionado.")
         return
 
     i_mean = np.mean(matriz_i, axis=0)
     i_std = np.std(matriz_i, axis=0) if len(matriz_i) > 1 else np.zeros_like(i_mean)
     fit_res = _ajustar_reta_ohm(v_grid, i_mean, fator_geom)
     i_fit = fit_res["intercept"] + fit_res["slope"] * v_grid
+
+    coletor.adicionar(
+        legenda_iv,
+        {
+            "R": fit_res["r_ohms"],
+            "sigma": fit_res["sigma_sm"],
+            "slope": fit_res["slope"],
+            "R2": fit_res["r2"],
+            "n_curvas": int(len(matriz_i)),
+        },
+        unidades=_UNIDADES_IV,
+        meta=_meta_registro_iv(ativas, sufixo_modo, fator_geom, v_min_sel, v_max_sel, n_pts_iv),
+    )
 
     txt_r = _formatar_resistencia(fit_res["r_ohms"], fmt_res_sel, usar_virgula)
     txt_sig = _formatar_condutividade(fit_res["sigma_sm"], fmt_cond_sel, usar_virgula)
@@ -616,7 +682,7 @@ def render(cfg_plot: dict) -> None:
         ymin_m = lc3.number_input("Y mín", value=float(np.min(y_plot - y_err) * 1.15), key="iv_s_ymin")
         ymax_m = lc4.number_input("Y máx", value=float(np.max(y_plot + y_err) * 1.15), key="iv_s_ymax")
 
-    fig_iv, ax_iv = plt.subplots(figsize=(cfg_plot["fig_w"], cfg_plot["fig_h"]), dpi=150)
+    fig_iv, ax_iv = nova_figura_origin(cfg_plot, xlabel_iv, ylabel_iv, labelpad=7)
 
     if eixos_zero_iv:
         ax_iv.axhline(0, color="black", linewidth=0.85, zorder=1)
@@ -661,9 +727,6 @@ def render(cfg_plot: dict) -> None:
         verticalalignment="top",
     )
 
-    ax_iv.set_xlabel(xlabel_iv, fontsize=cfg_plot["font_labels"], labelpad=7)
-    ax_iv.set_ylabel(ylabel_iv, fontsize=cfg_plot["font_labels"], labelpad=7)
-
     if limites_manuais_iv:
         ax_iv.set_xlim(xmin_m, xmax_m)
         ax_iv.set_ylim(ymin_m, ymax_m)
@@ -671,16 +734,7 @@ def render(cfg_plot: dict) -> None:
         margem_x = 0.04 * (x_plot[-1] - x_plot[0])
         ax_iv.set_xlim(x_plot[0] - margem_x, x_plot[-1] + margem_x)
 
-    leg = ax_iv.legend(
-        loc="upper right",
-        frameon=True,
-        fancybox=False,
-        edgecolor="black",
-        fontsize=cfg_plot["font_legend"],
-    )
-    leg.get_frame().set_linewidth(0.9)
-
-    aplicar_estilo_origin(ax_iv, cfg_plot)
+    legenda_origin(ax_iv, cfg_plot, loc="upper right")
     plt.tight_layout()
 
     col_g_iv, col_m_iv = st.columns([2.3, 1.0])
@@ -706,3 +760,9 @@ def render(cfg_plot: dict) -> None:
         botao_download_csv(df_export_iv, f"Dados_IxV_{legenda_iv}_{sufixo_modo}", cfg_plot, "iv_std")
 
     plt.close(fig_iv)
+
+
+def render(cfg_plot: dict) -> None:
+    """Ponto de entrada do app.py: o corpo roda dentro da sessão de registro central de resultados."""
+    with sessao_resultados(registro_central.TEC_IV, _ORIGEM_REGISTRO, cfg_plot, "iv_reg") as coletor:
+        _render_corpo(cfg_plot, coletor)

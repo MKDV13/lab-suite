@@ -73,6 +73,7 @@ __all__ = [
     "TEC_IV",
     "TEC_UVVIS",
     "TEC_ZVIEW",
+    "amostra_de_arquivo",
     "amostras",
     "existe",
     "exportar_json",
@@ -92,6 +93,19 @@ __all__ = [
     "total",
     "versao",
 ]
+
+
+def amostra_de_arquivo(nome_arquivo: str) -> str:
+    """
+    Nome de amostra padrão a partir do nome de um arquivo: remove o caminho e a extensão curta
+    (.dat, .z, .csv, .txt ...). É a mesma regra de legenda padrão do Add-on 03, para que a mesma amostra
+    tenha o mesmo nome em técnicas diferentes. 'EIS_P3HT_01.z' -> 'EIS_P3HT_01'; 'meu.arquivo.csv' -> 'meu.arquivo'.
+    """
+    nome = str(nome_arquivo).strip().replace("\\", "/").rsplit("/", 1)[-1]
+    base, ponto, extensao = nome.rpartition(".")
+    if ponto and base and 1 <= len(extensao) <= 4 and extensao.isalnum():
+        nome = base
+    return nome
 
 
 # ==============================================================================
